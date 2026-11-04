@@ -1,5 +1,5 @@
 // Caches the app shell so ClassBell opens without internet.
-const CACHE = 'classbell-v9';
+const CACHE = 'classbell-v10';
 const SHELL = ['./', './index.html', './app.js', './manifest.json'];
 
 self.addEventListener('install', e => {
@@ -9,12 +9,17 @@ self.addEventListener('install', e => {
 
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(keys =>
-    Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))));
+    Promise.all(keys.filter(k => k !== CACHE && k !== 'classbell-img').map(k => caches.delete(k)))));
   self.clients.claim();
 });
 
 self.addEventListener('fetch', e => {
   const req = e.request;
+  if (req.method === 'GET' && req.url.includes('/storage/v1/object/public/backgrounds/')) {
+    // Background pictures: keep a saved copy so they show instantly next time.
+    e.respondWith(caches.open('classbell-img').then(c => c.match(req).then(hit => hit || fetch(req).then(res => { c.put(req, res.clone()); return res; }))));
+    return;
+  }
   if (req.method !== 'GET' || req.url.includes('supabase.co')) return; // data always goes to the server
   e.respondWith(
     fetch(req).then(res => {

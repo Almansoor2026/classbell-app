@@ -88,6 +88,7 @@ async function teacherView() {
       <button class="btn gold" id="ad">Add to my timetable</button></div>`}
     <h3>Reminders</h3><div class="card">
       <label>Remind me this many minutes before class</label><input id="ld" type="number" min="0" max="120" value="${settings.reminder_lead_minutes}">
+      <label>Snooze for how many minutes (Android app)</label><input id="sz" type="number" min="1" max="30" value="${localStorage.getItem('cb_snooze') || 5}">
       <label>Method</label><select id="rm"><option value="push" ${settings.reminder_method === 'push' ? 'selected' : ''}>Phone notification</option><option value="sms" ${settings.reminder_method === 'sms' ? 'selected' : ''}>SMS (coming soon)</option></select>
       <button class="btn" id="sr">Save and turn on reminders</button></div>`;
 
@@ -119,11 +120,12 @@ async function teacherView() {
     };
   }
   $('sr').onclick = async () => {
+    localStorage.setItem('cb_snooze', +$('sz').value || 5);
     const row = { teacher_id: me.id, reminder_lead_minutes: +$('ld').value || 0, reminder_method: $('rm').value };
     if (!offline) { const { error } = await sb.from('teacher_settings').upsert(row); if (error) return fail(error); }
     if (isNative()) {
       const r = await nativeAlarms(sorted, +$('ld').value || 0, true);
-      toast(r.ok ? `Alarms set for ${r.n} class${r.n === 1 ? '' : 'es'}. They sound on this phone even when the app is closed.` : r.err, !r.ok);
+      toast(r.ok ? `Alarms set for ${r.n} class${r.n === 1 ? '' : 'es'}. They ring with your phone's alarm sound and flashlight until you tap Snooze or Stop.` : r.err, !r.ok);
       return teacherView();
     }
     if ('Notification' in window && Notification.permission !== 'granted') await Notification.requestPermission();
@@ -175,8 +177,10 @@ async function bgManager() {
   $('bgu').onclick = async () => {
     const fs = [...$('bgf').files]; if (!fs.length) return toast('Choose one or more pictures.', true);
     for (const f of fs) {
-      const name = Date.now() + '-' + f.name.replace(/[^\w.-]/g, '_');
-      const { error } = await sb.storage.from('backgrounds').upload(name, f, { contentType: f.type });
+      const name = Date.now() + '-' + f.name.replace(/\.\w+$/, '').replace(/[^\w-]/g, '_') + '.jpg';
+      let body = f;
+      try { body = await shrink(f); } catch (e) { }
+      const { error } = await sb.storage.from('backgrounds').upload(name, body, { contentType: 'image/jpeg', cacheControl: '31536000' });
       if (error) return fail(error);
     }
     toast('Uploaded.'); startBg(); bgManager();
@@ -206,31 +210,35 @@ async function enablePush() {
 const isNative = () => !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
 
 async function nativeAlarms(entries, lead, interactive) {
-  const LN = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.LocalNotifications;
-  if (!LN) return { ok: false, err: 'Alarm feature not available in this app build.' };
-  let perm = await LN.checkPermissions();
-  if (perm.display !== 'granted') {
-    if (!interactive) return { ok: false, err: 'no permission' };
-    perm = await LN.requestPermissions();
-    if (perm.display !== 'granted') return { ok: false, err: 'Allow notifications for ClassBell in your phone settings, then try again.' };
+  const P = window.Capacitor && Capacitor.Plugins, LN = P && P.LocalNotifications, CA = P && P.ClassAlarm;
+  if (!CA) return { ok: false, err: 'Alarm feature not available in this app build.' };
+  if (LN) {
+    let perm = await LN.checkPermissions();
+    if (perm.display !== 'granted') {
+      if (!interactive) return { ok: false, err: 'no permission' };
+      perm = await LN.requestPermissions();
+      if (perm.display !== 'granted') return { ok: false, err: 'Allow notifications for ClassBell in your phone settings, then try again.' };
+    }
   }
-  if (interactive) {
-    try { const ex = await LN.checkExactNotificationSetting(); if (ex.exact_alarm !== 'granted') await LN.changeExactNotificationSetting(); } catch (e) {}
-  }
-  await LN.createChannel({ id: 'class_alarm', name: 'Class alarms', description: 'Reminders before class', importance: 5, visibility: 1, vibration: true });
-  const pend = await LN.getPending();
-  if (pend.notifications.length) await LN.cancel({ notifications: pend.notifications });
-  const list = [];
+  const items = [];
   entries.forEach((e, i) => {
     const m = mins(e.st) - lead;
     if (m < 0) return;
-    list.push({
-      id: i + 1, channelId: 'class_alarm',
+    items.push({ id: i + 1, day: e.day, hour: Math.floor(m / 60), minute: m % 60,
       title: lead ? `${e.subjects.name} in ${lead} min` : `${e.subjects.name} starts now`,
-      body: `${e.classes.name}, ${e.lbl} at ${hm(e.st)}`,
-      schedule: { on: { weekday: (e.day % 7) + 1, hour: Math.floor(m / 60), minute: m % 60 }, allowWhileIdle: true }
-    });
+      body: `${e.classes.name}, ${e.lbl} at ${hm(e.st)}` });
   });
-  if (list.length) await LN.schedule({ notifications: list });
-  return { ok: true, n: list.length };
+  await CA.schedule({ items, snooze: +localStorage.getItem('cb_snooze') || 5 });
+  return { ok: true, n: items.length };
 }
+
+// Shrinks big phone photos before upload so the background loads fast.
+async function shrink(file) {
+  const bmp = await createImageBitmap(file);
+  const s = Math.min(1, 1280 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * s); c.height = Math.round(bmp.height * s);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  return await new Promise(r => c.toBlob(r, 'image/jpeg', 0.7));
+        }
+    

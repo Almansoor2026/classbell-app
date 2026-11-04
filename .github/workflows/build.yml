@@ -49,11 +49,253 @@ jobs:
           curl -sSL https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.js -o www/supabase.js
           sed -i 's#https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.js#supabase.js#' www/index.html
           grep -c 'src="supabase.js"' www/index.html
-      - name: Add Android and permissions
+      - name: Add Android and native alarm code
         run: |
           npx cap add android
           npx cap sync android
-          sed -i 's#<application#<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>\n <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>\n <uses-permission android:name="android.permission.VIBRATE"/>\n <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n <application#' android/app/src/main/AndroidManifest.xml
+          D=android/app/src/main/java/com/classbell/app
+          cat > $D/MainActivity.java <<'EOF'
+          package com.classbell.app;
+
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+            @Override
+            public void onCreate(Bundle savedInstanceState) {
+              registerPlugin(AlarmPlugin.class);
+              super.onCreate(savedInstanceState);
+            }
+          }
+          EOF
+          cat > $D/AlarmPlugin.java <<'EOF'
+          package com.classbell.app;
+
+          import android.content.Context;
+          import com.getcapacitor.JSArray;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+
+          @CapacitorPlugin(name = "ClassAlarm")
+          public class AlarmPlugin extends Plugin {
+            @PluginMethod
+            public void schedule(PluginCall call) {
+              Context c = getContext();
+              JSArray items = call.getArray("items");
+              c.getSharedPreferences(Scheduler.PREFS, 0).edit()
+                .putString("items", items == null ? "[]" : items.toString())
+                .putInt("snooze", call.getInt("snooze", 5))
+                .apply();
+              Scheduler.scheduleAll(c);
+              call.resolve();
+            }
+          }
+          EOF
+          cat > $D/Scheduler.java <<'EOF'
+          package com.classbell.app;
+
+          import android.app.AlarmManager;
+          import android.app.PendingIntent;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import java.util.Calendar;
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+
+          public class Scheduler {
+            static final String PREFS = "classbell";
+
+            static PendingIntent pi(Context c, int id, String title, String body) {
+              Intent i = new Intent(c, AlarmReceiver.class).setAction("com.classbell.RING")
+                .putExtra("title", title).putExtra("body", body);
+              return PendingIntent.getBroadcast(c, id, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            }
+
+            static void set(Context c, long when, int id, String title, String body) {
+              AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+              PendingIntent show = PendingIntent.getActivity(c, 0, new Intent(c, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
+              am.setAlarmClock(new AlarmManager.AlarmClockInfo(when, show), pi(c, id, title, body));
+            }
+
+            // Sets the next occurrence of every saved class alarm. Called when the app saves, after each ring, and after reboot.
+            static void scheduleAll(Context c) {
+              try {
+                SharedPreferences p = c.getSharedPreferences(PREFS, 0);
+                AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+                int oldN = p.getInt("n", 0);
+                for (int k = 1; k <= oldN; k++) am.cancel(pi(c, k, "", ""));
+                JSONArray a = new JSONArray(p.getString("items", "[]"));
+                for (int k = 0; k < a.length(); k++) {
+                  JSONObject o = a.getJSONObject(k);
+                  Calendar t = Calendar.getInstance();
+                  t.set(Calendar.SECOND, 0);
+                  t.set(Calendar.MILLISECOND, 0);
+                  t.set(Calendar.DAY_OF_WEEK, o.getInt("day") % 7 + 1);
+                  t.set(Calendar.HOUR_OF_DAY, o.getInt("hour"));
+                  t.set(Calendar.MINUTE, o.getInt("minute"));
+                  if (t.getTimeInMillis() <= System.currentTimeMillis() + 1000) t.add(Calendar.DAY_OF_YEAR, 7);
+                  set(c, t.getTimeInMillis(), k + 1, o.optString("title"), o.optString("body"));
+                }
+                p.edit().putInt("n", a.length()).apply();
+              } catch (Exception e) { }
+            }
+          }
+          EOF
+          cat > $D/AlarmReceiver.java <<'EOF'
+          package com.classbell.app;
+
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import androidx.core.content.ContextCompat;
+
+          public class AlarmReceiver extends BroadcastReceiver {
+            @Override
+            public void onReceive(Context c, Intent i) {
+              String a = i.getAction() == null ? "" : i.getAction();
+              if (a.equals(Intent.ACTION_BOOT_COMPLETED)) { Scheduler.scheduleAll(c); return; }
+              if (a.equals("com.classbell.STOP")) { c.stopService(new Intent(c, RingService.class)); return; }
+              if (a.equals("com.classbell.SNOOZE")) {
+                c.stopService(new Intent(c, RingService.class));
+                int m = c.getSharedPreferences(Scheduler.PREFS, 0).getInt("snooze", 5);
+                Scheduler.set(c, System.currentTimeMillis() + m * 60000L, 9000, i.getStringExtra("title"), i.getStringExtra("body"));
+                return;
+              }
+              Intent s = new Intent(c, RingService.class)
+                .putExtra("title", i.getStringExtra("title")).putExtra("body", i.getStringExtra("body"));
+              ContextCompat.startForegroundService(c, s);
+              Scheduler.scheduleAll(c);
+            }
+          }
+          EOF
+          cat > $D/RingService.java <<'EOF'
+          package com.classbell.app;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.Intent;
+          import android.content.pm.ServiceInfo;
+          import android.hardware.camera2.CameraManager;
+          import android.media.AudioAttributes;
+          import android.media.MediaPlayer;
+          import android.media.RingtoneManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Handler;
+          import android.os.IBinder;
+          import android.os.Looper;
+          import android.os.PowerManager;
+          import android.os.VibrationEffect;
+          import android.os.Vibrator;
+          import androidx.core.app.NotificationCompat;
+
+          public class RingService extends Service {
+            MediaPlayer mp;
+            Vibrator vib;
+            CameraManager cm;
+            String cam;
+            boolean on;
+            PowerManager.WakeLock wl;
+            final Handler h = new Handler(Looper.getMainLooper());
+            final Runnable blink = new Runnable() {
+              public void run() {
+                try { on = !on; cm.setTorchMode(cam, on); } catch (Exception e) { }
+                h.postDelayed(this, 500);
+              }
+            };
+            final Runnable auto = new Runnable() { public void run() { stopSelf(); } };
+
+            @Override public IBinder onBind(Intent i) { return null; }
+
+            @Override
+            public int onStartCommand(Intent i, int flags, int startId) {
+              String title = (i != null && i.getStringExtra("title") != null) ? i.getStringExtra("title") : "Class time";
+              String body = (i != null && i.getStringExtra("body") != null) ? i.getStringExtra("body") : "";
+              NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+              if (Build.VERSION.SDK_INT >= 26) {
+                NotificationChannel ch = new NotificationChannel("class_ring", "Class alarm", NotificationManager.IMPORTANCE_HIGH);
+                ch.setSound(null, null);
+                nm.createNotificationChannel(ch);
+              }
+              PendingIntent open = PendingIntent.getActivity(this, 1, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
+              PendingIntent snooze = PendingIntent.getBroadcast(this, 2,
+                new Intent(this, AlarmReceiver.class).setAction("com.classbell.SNOOZE").putExtra("title", title).putExtra("body", body),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+              PendingIntent stop = PendingIntent.getBroadcast(this, 3,
+                new Intent(this, AlarmReceiver.class).setAction("com.classbell.STOP"), PendingIntent.FLAG_IMMUTABLE);
+              Notification n = new NotificationCompat.Builder(this, "class_ring")
+                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                .setContentTitle(title).setContentText(body)
+                .setPriority(NotificationCompat.PRIORITY_MAX).setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setOngoing(true).setContentIntent(open).setFullScreenIntent(open, true)
+                .addAction(0, "Snooze", snooze).addAction(0, "Stop", stop).build();
+              if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+              else startForeground(1, n);
+              startRinging();
+              return START_NOT_STICKY;
+            }
+
+            void startRinging() {
+              stopRinging();
+              try {
+                Uri u = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+                if (u == null) u = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+                mp = new MediaPlayer();
+                mp.setDataSource(this, u);
+                mp.setAudioAttributes(new AudioAttributes.Builder()
+                  .setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
+                mp.setLooping(true);
+                mp.prepare();
+                mp.start();
+              } catch (Exception e) { }
+              try {
+                vib = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+                long[] pat = {0, 700, 400};
+                if (Build.VERSION.SDK_INT >= 26) vib.vibrate(VibrationEffect.createWaveform(pat, 0));
+                else vib.vibrate(pat, 0);
+              } catch (Exception e) { }
+              try {
+                cm = (CameraManager) getSystemService(CAMERA_SERVICE);
+                cam = cm.getCameraIdList()[0];
+                h.post(blink);
+              } catch (Exception e) { }
+              try {
+                PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+                wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "classbell:ring");
+                wl.acquire(5 * 60 * 1000L);
+              } catch (Exception e) { }
+              h.postDelayed(auto, 5 * 60 * 1000L);
+            }
+
+            void stopRinging() {
+              h.removeCallbacksAndMessages(null);
+              try { if (mp != null) { mp.stop(); mp.release(); } } catch (Exception e) { }
+              mp = null;
+              try { if (vib != null) vib.cancel(); } catch (Exception e) { }
+              try { if (cm != null && cam != null) cm.setTorchMode(cam, false); } catch (Exception e) { }
+              on = false;
+              try { if (wl != null && wl.isHeld()) wl.release(); } catch (Exception e) { }
+            }
+
+            @Override public void onDestroy() { stopRinging(); super.onDestroy(); }
+          }
+          EOF
+          python3 - <<'PY'
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p).read()
+          names = ['POST_NOTIFICATIONS','VIBRATE','WAKE_LOCK','RECEIVE_BOOT_COMPLETED','FOREGROUND_SERVICE','FOREGROUND_SERVICE_MEDIA_PLAYBACK','USE_FULL_SCREEN_INTENT']
+          perms = ''.join('<uses-permission android:name="android.permission.%s"/>\n ' % x for x in names)
+          s = s.replace('<application', perms + '<application', 1)
+          comp = '<receiver android:name=".AlarmReceiver" android:exported="true"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter></receiver>\n <service android:name=".RingService" android:exported="false" android:foregroundServiceType="mediaPlayback"/>\n '
+          s = s.replace('</application>', comp + '</application>', 1)
+          open(p, 'w').write(s)
+          PY
       - name: Build APK
         run: |
           cd android

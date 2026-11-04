@@ -249,17 +249,34 @@ async function periodsView(school, section, day = 0) {
   };
 }
 
-async function startBg() {
-  let urls = JSON.parse(localStorage.getItem('cb_bg') || '[]');
-  try {
-    const { data } = await sb.storage.from('backgrounds').list('', { limit: 30, sortBy: { column: 'created_at', order: 'asc' } });
-    if (data) { urls = data.filter(f => f.id).map(f => sb.storage.from('backgrounds').getPublicUrl(f.name).data.publicUrl); localStorage.setItem('cb_bg', JSON.stringify(urls)); }
-  } catch (e) {}
+function paintBg(urls) {
   const box = $('bg'); box.innerHTML = ''; clearInterval(window._bgT);
   if (!urls.length) return;
-  const els = urls.map(u => { const i = document.createElement('i'); i.style.backgroundImage = `url("${u}")`; box.appendChild(i); return i; });
-  let n = 0; els[0].className = 'on';
-  if (els.length > 1) window._bgT = setInterval(() => { els[n].className = ''; n = (n + 1) % els.length; els[n].className = 'on'; }, 6000);
+  const els = urls.map(u => {
+    const i = document.createElement('i'); box.appendChild(i);
+    const im = new Image();
+    im.onload = () => { i.style.backgroundImage = `url("${u}")`; i.dataset.ok = 1; if (!box.querySelector('.on')) i.className = 'on'; };
+    im.src = u; return i;
+  });
+  let n = 0;
+  if (els.length > 1) window._bgT = setInterval(() => {
+    for (let k = 1; k <= els.length; k++) {
+      const j = (n + k) % els.length;
+      if (els[j].dataset.ok) { els[n].className = ''; n = j; els[n].className = 'on'; break; }
+    }
+  }, 6000);
+}
+async function startBg() {
+  paintBg(JSON.parse(localStorage.getItem('cb_bg') || '[]'));
+  try {
+    const { data } = await sb.storage.from('backgrounds').list('', { limit: 30, sortBy: { column: 'created_at', order: 'asc' } });
+    if (data) {
+      const urls = data.filter(f => f.id).map(f => sb.storage.from('backgrounds').getPublicUrl(f.name).data.publicUrl);
+      const old = localStorage.getItem('cb_bg');
+      localStorage.setItem('cb_bg', JSON.stringify(urls));
+      if (JSON.stringify(urls) !== old) paintBg(urls);
+    }
+  } catch (e) { }
 }
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
@@ -274,7 +291,8 @@ function showErr(m) {
 }
 window.addEventListener('error', e => showErr(e.message));
 window.addEventListener('unhandledrejection', e => showErr((e.reason && e.reason.message) || String(e.reason)));
-boot().catch(e => showErr(e.message)).finally(() => setTimeout(startBg, 800));
+startBg();
+boot().catch(e => showErr(e.message));
 </script>
 </body>
 </html>

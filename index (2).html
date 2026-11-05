@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#17323A">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ClassBell">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>ClassBell</title>
+<style>
+:root{--ink:#17323A;--bell:#F2B705;--bg:#EEF2F3;--card:#fff;--line:#D3DCDE;--mute:#5B7178;--err:#B3261E}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{background:var(--ink);color:#fff;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0}
+header b{font-size:18px;letter-spacing:.2px}
+header button{background:none;color:#fff;border:1px solid #ffffff55;padding:6px 10px;border-radius:8px}
+main{max-width:560px;margin:0 auto;padding:16px}
+h2{margin:8px 0 12px;font-size:20px}
+h3{margin:20px 0 8px;font-size:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.row>*{flex:1 1 120px}
+label{display:block;font-size:13px;color:var(--mute);margin:8px 0 3px}
+input,select{width:100%;padding:11px;border:1px solid var(--line);border-radius:8px;font:inherit;background:#fff}
+button{font:inherit;cursor:pointer}
+.btn{background:var(--ink);color:#fff;border:0;padding:12px 16px;border-radius:10px;width:100%;margin-top:12px;font-weight:600}
+.btn.gold{background:var(--bell);color:var(--ink)}
+.btn.line{background:#fff;color:var(--ink);border:1px solid var(--line)}
+.chip{background:#fff;border:1px solid var(--line);border-radius:20px;padding:7px 12px;margin:4px 4px 0 0}
+.item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.item:last-child{border:0}
+.mute{color:var(--mute);font-size:14px}
+.tag{background:#E6F0F2;border-radius:6px;padding:2px 8px;font-size:13px}
+.brk{background:#FFF6D6}
+table{width:100%;border-collapse:collapse;font-size:15px}
+td{padding:7px 4px;border-bottom:1px solid var(--line)}
+#toast{position:fixed;left:16px;right:16px;bottom:20px;background:var(--ink);color:#fff;padding:12px 14px;border-radius:10px;display:none;z-index:9}
+#toast.err{background:var(--err)}
+:focus-visible{outline:3px solid var(--bell);outline-offset:2px}
+body{background:transparent}
+#bg{position:fixed;inset:0;z-index:-1;background:linear-gradient(135deg,#17323A 0%,#1F5F5B 55%,#2d7a6e 100%)}
+#bg i{position:absolute;inset:0;background-size:cover;background-position:center;opacity:0;transition:opacity 1.6s}
+#bg i.on{opacity:1}
+#bg:after{content:"";position:absolute;inset:0;background:rgba(10,30,36,.4)}
+.card{background:rgba(255,255,255,.95)}
+main>h2,main>h3{color:#fff;text-shadow:0 1px 5px #0009}
+td input{padding:8px;min-width:0}
+.today{background:linear-gradient(135deg,#F2B705,#f7d046);color:#17323A;border-radius:14px;padding:16px;margin:4px 0 14px;box-shadow:0 6px 18px #0004}
+.tbig{font-size:22px;font-weight:700}.tsub{margin-top:2px;font-size:15px}
+.tstats{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.tstats span{background:#17323A;color:#fff;border-radius:20px;padding:3px 10px;font-size:13px}
+.tstats .tpause{background:#B3261E}
+.note{color:#17323A;font-size:13px;background:#FFF6D6;border-radius:6px;padding:1px 6px;display:inline-block;margin-top:3px}
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<header><b>ClassBell</b><button id="out" hidden>Sign out</button></header>
+<main id="app"><p style="color:#fff">Loading…</p></main>
+<div id="toast" role="status"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.js"></script>
+<script src="app.js"></script>
+<script>
+// ====== 1. PASTE YOUR SUPABASE DETAILS HERE (Project Settings > API) ======
+const SUPABASE_URL = 'https://rerjndngiugrsfcrjwxz.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_bAOR-BHqEKtxaVuSgpV1_w_o1ewMpzB';
+// ==========================================================================
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { lock: async (name, timeout, fn) => await fn() } });
+const app = document.getElementById('app');
+const outBtn = document.getElementById('out');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const $ = id => document.getElementById(id);
+const DAYS = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+let me = null, user = null, mode = 'login';
+
+function toast(msg, err) {
+  const t = $('toast'); t.textContent = msg; t.className = err ? 'err' : '';
+  t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 3500);
+}
+function fail(e) { toast(e && e.message ? e.message : 'Something went wrong. Check your connection and try again.', true); }
+
+outBtn.onclick = async () => { await sb.auth.signOut(); me = user = null; boot(); };
+
+async function boot() {
+  const { data: { session } } = await sb.auth.getSession();
+  outBtn.hidden = !session;
+  if (!session) return loginView();
+  user = session.user;
+  const { data, error } = await sb.from('profiles').select('*').eq('id', user.id).maybeSingle();
+  if (error) { me = JSON.parse(localStorage.getItem('cb_me') || 'null'); }
+  else { me = data; if (me) localStorage.setItem('cb_me', JSON.stringify(me)); }
+  if (!me) return pendingView();
+  if (me.role === 'super_admin') return schoolsView();
+  return homeView();
+}
+
+// ---------- Login / sign up ----------
+function loginView() {
+  const up = mode === 'signup';
+  app.innerHTML = `<h2>${up ? 'Create your account' : 'Sign in'}</h2><div class="card">
+    ${up ? `<label>Full name</label><input id="fn" autocomplete="name">
+    <label>Phone number</label><input id="ph" type="tel" autocomplete="tel">` : ''}
+    <label>Email</label><input id="em" type="email" autocomplete="email">
+    <label>Password</label><input id="pw" type="password" autocomplete="${up ? 'new-password' : 'current-password'}">
+    <button class="btn" id="go">${up ? 'Create account' : 'Sign in'}</button>
+    <button class="btn line" id="sw">${up ? 'I already have an account' : 'Create a new account'}</button></div>`;
+  $('sw').onclick = () => { mode = up ? 'login' : 'signup'; loginView(); };
+  $('go').onclick = async () => {
+    const email = $('em').value.trim(), password = $('pw').value;
+    if (!email || password.length < 6) return toast('Enter your email and a password of at least 6 characters.', true);
+    const r = up
+      ? await sb.auth.signUp({ email, password, options: { data: { full_name: $('fn').value.trim(), phone: $('ph').value.trim() } } })
+      : await sb.auth.signInWithPassword({ email, password });
+    if (r.error) return fail(r.error);
+    if (up && !r.data.session) { mode = 'login'; loginView(); return toast('Account created. Confirm your email if asked, then sign in.'); }
+    boot();
+  };
+}
+
+function pendingView() {
+  app.innerHTML = `<h2>Almost there</h2><div class="card">
+    <p>Your account is not linked to a school yet. Ask your super admin or principal to add <b>${esc(user.email)}</b>.</p>
+    <p class="mute">Your user ID (the super admin needs this only for first-time setup):</p>
+    <input readonly value="${esc(user.id)}" onfocus="this.select()">
+    <button class="btn line" id="rf">Check again</button></div>`;
+  $('rf').onclick = boot;
+}
+
+function homeView() { roleView(); }
+
+// ---------- Super admin: schools ----------
+async function schoolsView() {
+  const { data: schools, error } = await sb.from('schools').select('*').order('created_at', { ascending: false });
+  if (error) fail(error);
+  app.innerHTML = `<h2>Schools</h2><div class="card">${
+    (schools && schools.length) ? schools.map(s => `<div class="item" data-id="${s.id}">
+      <div><b>${esc(s.name)}</b><div class="mute">${esc(s.address || 'No address')}</div></div><span class="tag">${esc(s.status)}</span></div>`).join('')
+    : '<p class="mute">No schools yet. Add your first school below.</p>'}</div>
+    <h3>Register a school</h3><div class="card">
+    <label>School name</label><input id="sn">
+    <label>Address</label><input id="sa">
+    <button class="btn gold" id="add">Register school</button></div>
+    <h3>Background pictures</h3><div class="card" id="bgm"></div>`;
+  app.querySelectorAll('.item').forEach(el => el.onclick = () => schoolView(el.dataset.id));
+  bgManager();
+  $('add').onclick = async () => {
+    const name = $('sn').value.trim();
+    if (!name) return toast('Enter the school name.', true);
+    const { data, error } = await sb.from('schools').insert({ name, address: $('sa').value.trim() || null }).select().single();
+    if (error) return fail(error);
+    await sb.from('school_days').insert([1, 2, 3, 4, 5].map(day => ({ school_id: data.id, day })));
+    toast('School registered.'); schoolView(data.id);
+  };
+}
+
+async function schoolView(id) {
+  const [s, sec, ppl, per] = await Promise.all([
+    sb.from('schools').select('*').eq('id', id).single(),
+    sb.from('sections').select('*').eq('school_id', id).order('name'),
+    sb.from('profiles').select('full_name,role,phone').eq('school_id', id),
+    sb.from('period_templates').select('section_id').eq('school_id', id)
+  ]);
+  if (s.error) return fail(s.error);
+  const school = s.data, sections = sec.data || [], people = ppl.data || [], periods = per.data || [];
+  const principal = people.find(p => p.role === 'principal');
+  const teachers = people.filter(p => p.role === 'teacher').length;
+  const have = sections.map(x => x.name);
+  app.innerHTML = `<button class="chip" id="bk">Back to schools</button>
+    <h2>${esc(school.name)}</h2>
+    <div class="card"><p class="mute">Principal</p>
+      <p><b>${principal ? esc(principal.full_name) : 'Not assigned yet'}</b></p>
+      <p class="mute">${teachers} teacher${teachers === 1 ? '' : 's'} registered</p>
+      <label>Assign a principal by email (they must create an account first)</label>
+      <input id="pe" type="email" placeholder="principal@email.com">
+      <button class="btn line" id="ap">Assign principal</button></div>
+    <h3>Sections and timetables</h3><div class="card">
+    ${sections.length ? sections.map(x => { const n = periods.filter(p => p.section_id === x.id).length;
+      return `<div class="item" data-sec="${x.id}"><div><b>${esc(x.name)}</b><div class="mute">${n ? n + ' periods set' : 'No periods yet'}</div></div><span class="tag">Set periods</span></div>`; }).join('')
+      : '<p class="mute">Add the sections this school has.</p>'}
+    <div>${['Primary', 'Junior Secondary', 'Senior Secondary'].filter(n => !have.includes(n)).map(n => `<button class="chip" data-add="${n}">Add ${n}</button>`).join('')}</div></div>`;
+  $('bk').onclick = schoolsView;
+  $('ap').onclick = async () => {
+    const email = $('pe').value.trim();
+    if (!email) return toast('Enter the principal’s email.', true);
+    const { error } = await sb.rpc('assign_user_to_school', { p_email: email, p_role: 'principal', p_school_id: id });
+    if (error) return fail(error);
+    toast('Principal assigned.'); schoolView(id);
+  };
+  app.querySelectorAll('[data-add]').forEach(b => b.onclick = async () => {
+    const { error } = await sb.from('sections').insert({ school_id: id, name: b.dataset.add });
+    if (error) return fail(error); schoolView(id);
+  });
+  app.querySelectorAll('[data-sec]').forEach(el => el.onclick = () => periodsView(school, sections.find(x => x.id === el.dataset.sec)));
+}
+
+// ---------- Period template builder ----------
+const pad = n => String(n).padStart(2, '0');
+const fmt = m => pad(Math.floor(m / 60)) + ':' + pad(m % 60);
+
+async function periodsView(school, section, day = 0) {
+  let q = sb.from('period_templates').select('*').eq('section_id', section.id).order('start_time');
+  q = day ? q.eq('day', day) : q.is('day', null);
+  const { data: old } = await q;
+  const oldIds = (old || []).map(r => r.id);
+  let rows = (old || []).map(r => ({ id: r.id, label: r.label, start: r.start_time.slice(0, 5), end: r.end_time.slice(0, 5), brk: r.is_break }));
+  app.innerHTML = `<button class="chip" id="bk">Back to ${esc(school.name)}</button>
+    <h2>${esc(section.name)} periods</h2>
+    <div class="card"><label>Times for</label><select id="dsel"><option value="0">Every day (same times)</option>${[1, 2, 3, 4, 5].map(n => `<option value="${n}" ${n === day ? 'selected' : ''}>${DAYS[n]}</option>`).join('')}</select>
+    <p class="mute">If your times differ by day, set each day separately.</p></div>
+    <div class="card"><p class="mute">Quick start (this replaces the list below)</p>
+    <div class="row"><div><label>First period starts</label><input id="st" type="time" value="08:00"></div>
+    <div><label>Minutes per period</label><input id="ln" type="number" value="40" min="10"></div></div>
+    <div class="row"><div><label>Number of periods</label><input id="nm" type="number" value="8" min="1" max="15"></div>
+    <div><label>Break after period</label><input id="ba" type="number" value="3" min="0"></div>
+    <div><label>Break minutes</label><input id="bl" type="number" value="30" min="0"></div></div>
+    <button class="btn line" id="gen">Generate periods</button></div>
+    <div class="card"><p class="mute">Tap any time to change it. Use the label “Break” for breaks.</p><table id="tb"></table>
+    <button class="chip" id="addp">Add a period</button>
+    <button class="btn gold" id="sv">Save periods</button></div>`;
+  const draw = () => {
+    $('tb').innerHTML = rows.length ? rows.map((r, i) => `<tr class="${r.brk ? 'brk' : ''}"><td><input data-i="${i}" data-f="label" value="${esc(r.label)}"></td><td><input type="time" data-i="${i}" data-f="start" value="${r.start}"></td><td><input type="time" data-i="${i}" data-f="end" value="${r.end}"></td><td><button class="chip" data-x="${i}">X</button></td></tr>`).join('')
+      : '<tr><td class="mute">No periods yet. Generate or add one.</td></tr>';
+    $('tb').querySelectorAll('input').forEach(el => el.onchange = () => { const r = rows[+el.dataset.i]; r[el.dataset.f] = el.value; r.brk = /break|lunch|recess/i.test(r.label); });
+    $('tb').querySelectorAll('[data-x]').forEach(b => b.onclick = () => { rows.splice(+b.dataset.x, 1); draw(); });
+  };
+  draw();
+  $('dsel').onchange = () => periodsView(school, section, +$('dsel').value);
+  $('bk').onclick = () => schoolView(school.id);
+  $('addp').onclick = () => { const l = rows[rows.length - 1]; rows.push({ label: 'Period ' + (rows.length + 1), start: l ? l.end : '08:00', end: l ? l.end : '08:40', brk: false }); draw(); };
+  $('gen').onclick = () => {
+    const [h, m] = $('st').value.split(':').map(Number);
+    let t = h * 60 + m; const len = +$('ln').value, n = +$('nm').value, ba = +$('ba').value, bl = +$('bl').value;
+    if (!len || !n) return toast('Enter period length and number of periods.', true);
+    rows = [];
+    for (let i = 1; i <= n; i++) {
+      rows.push({ label: 'Period ' + i, start: fmt(t), end: fmt(t + len), brk: false }); t += len;
+      if (i === ba && bl > 0) { rows.push({ label: 'Break', start: fmt(t), end: fmt(t + bl), brk: true }); t += bl; }
+    }
+    draw();
+  };
+  $('sv').onclick = async () => {
+    if (!rows.length) return toast('Add or generate periods first.', true);
+    // Existing periods are updated in place, so teachers' timetables are kept.
+    const keep = rows.filter(r => r.id).map(r => r.id), gone = oldIds.filter(i => !keep.includes(i));
+    if (gone.length) { const d = await sb.from('period_templates').delete().in('id', gone); if (d.error) return fail(d.error); }
+    let next = 1 + Math.max(0, ...(old || []).map(r => r.period_number));
+    const base = r => ({ school_id: school.id, section_id: section.id, day: day || null, label: r.label, start_time: r.start, end_time: r.end, is_break: r.brk });
+    for (const r of rows) {
+      const res = r.id ? await sb.from('period_templates').update(base(r)).eq('id', r.id)
+        : await sb.from('period_templates').insert({ ...base(r), period_number: next++ });
+      if (res.error) return fail(res.error);
+    }
+    toast('Periods saved.'); schoolView(school.id);
+  };
+}
+
+function paintBg(urls) {
+  const box = $('bg'); box.innerHTML = ''; clearInterval(window._bgT);
+  if (!urls.length) return;
+  const els = urls.map(u => {
+    const i = document.createElement('i'); box.appendChild(i);
+    const im = new Image();
+    im.onload = () => { i.style.backgroundImage = `url("${u}")`; i.dataset.ok = 1; if (!box.querySelector('.on')) i.className = 'on'; };
+    im.src = u; return i;
+  });
+  let n = 0;
+  if (els.length > 1) window._bgT = setInterval(() => {
+    for (let k = 1; k <= els.length; k++) {
+      const j = (n + k) % els.length;
+      if (els[j].dataset.ok) { els[n].className = ''; n = j; els[n].className = 'on'; break; }
+    }
+  }, 6000);
+}
+async function startBg() {
+  paintBg(JSON.parse(localStorage.getItem('cb_bg') || '[]'));
+  try {
+    const { data } = await sb.storage.from('backgrounds').list('', { limit: 30, sortBy: { column: 'created_at', order: 'asc' } });
+    if (data) {
+      const urls = data.filter(f => f.id).map(f => sb.storage.from('backgrounds').getPublicUrl(f.name).data.publicUrl);
+      const old = localStorage.getItem('cb_bg');
+      localStorage.setItem('cb_bg', JSON.stringify(urls));
+      if (JSON.stringify(urls) !== old) paintBg(urls);
+    }
+  } catch (e) { }
+}
+
+// The Android app doesn't need the offline helper (its files are already inside the app).
+if ('serviceWorker' in navigator && !(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform())) navigator.serviceWorker.register('sw.js').catch(() => {});
+function showErr(m) {
+  if (app.querySelector('h2')) return toast(m, true);
+  app.innerHTML = `<h2>Something went wrong</h2><div class="card"><p>${esc(m)}</p>
+    <button class="btn" onclick="location.reload()">Try again</button><button class="btn line" id="rs">Reset saved app data</button></div>`;
+  $('rs').onclick = async () => {
+    try { (await navigator.serviceWorker.getRegistrations()).forEach(r => r.unregister()); (await caches.keys()).forEach(k => caches.delete(k)); } catch (e) {}
+    localStorage.clear(); location.reload();
+  };
+}
+window.addEventListener('error', e => showErr(e.message));
+window.addEventListener('unhandledrejection', e => showErr((e.reason && e.reason.message) || String(e.reason)));
+// iPhone hint: iPhones install web apps from Safari's Share menu.
+(function () {
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const standalone = window.navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+  if (!ios || standalone || localStorage.getItem('cb_ios_hint')) return;
+  const d = document.createElement('div');
+  d.className = 'card brk'; d.style.margin = '12px 16px';
+  d.innerHTML = '<b>Install ClassBell on your iPhone</b><p class="mute">In Safari, tap the Share button, then <b>Add to Home Screen</b>. Open ClassBell from your home screen to get reminders.</p><button class="chip" id="ioshide">Got it</button>';
+  app.before(d);
+  $('ioshide').onclick = () => { localStorage.setItem('cb_ios_hint', '1'); d.remove(); };
+})();
+startBg();
+boot().catch(e => showErr(e.message));
+</script>
+</body>
+</html>

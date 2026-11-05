@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -45,7 +47,11 @@ jobs:
       - name: Prepare web files
         run: |
           mkdir www
-          cp index.html app.js sw.js manifest.json www/
+          # Your phone may name uploads "index (2).html" etc. Use whichever index file was uploaded most recently.
+          newest=$(for f in index*.html; do echo "$(git log -1 --format=%ct -- "$f") $f"; done | sort -n | tail -1 | cut -d' ' -f2-)
+          echo "Using page file: $newest"
+          cp "$newest" www/index.html
+          cp app.js sw.js manifest.json www/
           curl -sSL https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.js -o www/supabase.js
           sed -i 's#https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.js#supabase.js#' www/index.html
           grep -c 'src="supabase.js"' www/index.html

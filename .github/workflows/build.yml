@@ -94,6 +94,7 @@ jobs:
               c.getSharedPreferences(Scheduler.PREFS, 0).edit()
                 .putString("items", items == null ? "[]" : items.toString())
                 .putInt("snooze", call.getInt("snooze", 5))
+                .putBoolean("flash", call.getBoolean("flash", true))
                 .apply();
               Scheduler.scheduleAll(c);
               call.resolve();
@@ -103,6 +104,7 @@ jobs:
             @PluginMethod
             public void test(PluginCall call) {
               Context c = getContext();
+              c.getSharedPreferences(Scheduler.PREFS, 0).edit().putBoolean("flash", call.getBoolean("flash", true)).apply();
               Intent s = new Intent(c, RingService.class).putExtra("title", "Test alarm").putExtra("body", "ClassBell alarm is working");
               ContextCompat.startForegroundService(c, s);
               call.resolve();
@@ -308,7 +310,7 @@ jobs:
               try {
                 cm = (CameraManager) getSystemService(CAMERA_SERVICE);
                 cam = cm.getCameraIdList()[0];
-                h.post(blink);
+                if (getSharedPreferences(Scheduler.PREFS, 0).getBoolean("flash", true)) h.post(blink);
               } catch (Exception e) { }
               try {
                 PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
@@ -341,6 +343,9 @@ jobs:
           s = s.replace('</application>', comp + '</application>', 1)
           open(p, 'w').write(s)
           PY
+      - name: Use fixed signing key (lets new versions install over old ones)
+        run: |
+          if [ -f debug.keystore ]; then mkdir -p ~/.android && cp debug.keystore ~/.android/debug.keystore; fi
       - name: Build APK
         run: |
           cd android

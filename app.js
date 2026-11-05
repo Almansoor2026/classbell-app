@@ -75,10 +75,11 @@ async function teacherView() {
   entries.forEach(norm);
   const sorted = [...entries].sort((a, b) => a.day - b.day || mins(a.st) - mins(b.st));
   const byDay = [1, 2, 3, 4, 5, 6, 7].map(n => ({ n, list: sorted.filter(e => e.day === n) })).filter(x => x.list.length);
-  app.innerHTML = `<h2>Hello, ${esc(me.full_name)}</h2>
+  app.innerHTML = `<h2>${greet()}, ${esc(me.full_name)}</h2>
+    <div class="today"><div id="today">${todayInner(sorted)}</div><button class="chip" id="pz">${localStorage.getItem('cb_paused') === '1' ? 'Turn alarms back on' : 'Pause all alarms (holiday)'}</button></div>
     ${offline ? '<div class="card brk">You are offline. Showing your saved timetable.</div>' : ''}
-    <h3>My timetable</h3><div class="card">${byDay.length ? byDay.map(g => `<b>${DAYS[g.n]}</b><table>${g.list.map(e => `<tr><td>${hm(e.st)}</td><td><b>${esc(e.subjects.name)}</b><br><span class="mute">${esc(e.classes.name)}, ${esc(e.lbl)}</span></td>
-      <td><button class="chip" data-del="${e.id}" ${offline ? 'disabled' : ''}>Remove</button></td></tr>`).join('')}</table>`).join('') : '<p class="mute">Nothing yet. Add your first class below.</p>'}</div>
+    <h3>My timetable</h3><div class="card">${byDay.length ? byDay.map(g => `<b>${DAYS[g.n]}</b><table>${g.list.map(e => `<tr><td>${hm(e.st)}</td><td><b>${esc(e.subjects.name)}</b><br><span class="mute">${esc(e.classes.name)}, ${esc(e.lbl)}</span>${noteLine(e)}</td>
+      <td><button class="chip" data-note="${e.id}">Note</button> <button class="chip" data-del="${e.id}" ${offline ? 'disabled' : ''}>Remove</button></td></tr>`).join('')}</table>`).join('') : '<p class="mute">Nothing yet. Add your first class below.</p>'}</div>
     ${offline ? '' : `<h3>Add a class</h3><div class="card">
       <label>Day</label><select id="dy">${[1, 2, 3, 4, 5].map(n => `<option value="${n}">${DAYS[n]}</option>`).join('')}</select>
       <label>Class</label><select id="cl">${classes.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
@@ -90,9 +91,24 @@ async function teacherView() {
       <label>Remind me this many minutes before class</label><input id="ld" type="number" min="0" max="120" value="${settings.reminder_lead_minutes}">
       <label>Snooze for how many minutes (Android app)</label><input id="sz" type="number" min="1" max="30" value="${localStorage.getItem('cb_snooze') || 5}">
       <label>Method</label><select id="rm"><option value="push" ${settings.reminder_method === 'push' ? 'selected' : ''}>Phone notification</option><option value="whatsapp" ${settings.reminder_method === 'whatsapp' ? 'selected' : ''}>WhatsApp message</option><option value="sms" ${settings.reminder_method === 'sms' ? 'selected' : ''}>SMS (coming soon)</option></select>
-      ${isNative() ? `<button class="btn line" id="tn">Choose ringtone (${esc(localStorage.getItem('cb_tone_name') || 'phone default')})</button><button class="btn line" id="tt">Test the alarm now</button>` : ''}
+      ${isNative() ? `<label>Flashlight when the alarm rings</label><select id="fl"><option value="1" ${localStorage.getItem('cb_flash') !== '0' ? 'selected' : ''}>On</option><option value="0" ${localStorage.getItem('cb_flash') === '0' ? 'selected' : ''}>Off</option></select><button class="btn line" id="tn">Choose ringtone (${esc(localStorage.getItem('cb_tone_name') || 'phone default')})</button><button class="btn line" id="tt">Test the alarm now</button>` : ''}
       <button class="btn" id="sr">Save and turn on reminders</button></div>`;
 
+  app.querySelectorAll('[data-note]').forEach(b => b.onclick = () => {
+    const k = noteKey(b.dataset.note), v = prompt('Note for this lesson (leave empty to clear):', localStorage.getItem(k) || '');
+    if (v === null) return;
+    v.trim() ? localStorage.setItem(k, v.trim()) : localStorage.removeItem(k);
+    teacherView();
+  });
+  $('pz').onclick = async () => {
+    const on = localStorage.getItem('cb_paused') === '1';
+    localStorage.setItem('cb_paused', on ? '0' : '1');
+    if (isNative()) await nativeAlarms(sorted, settings.reminder_lead_minutes, false).catch(() => {});
+    toast(on ? 'Alarms are back on.' : 'All alarms paused. Turn them back on when you return.');
+    teacherView();
+  };
+  clearInterval(window._todayT);
+  window._todayT = setInterval(() => { const el = $('today'); if (el) el.innerHTML = todayInner(sorted); }, 30000);
   app.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
     const { error } = await sb.from('timetable_entries').delete().eq('id', b.dataset.del);
     error ? fail(error) : teacherView();
@@ -122,9 +138,10 @@ async function teacherView() {
   }
   if (isNative()) {
     const CA = Capacitor.Plugins.ClassAlarm, LN = Capacitor.Plugins.LocalNotifications;
+    $('fl').onchange = async () => { localStorage.setItem('cb_flash', $('fl').value); await nativeAlarms(sorted, settings.reminder_lead_minutes, false).catch(() => {}); toast($('fl').value === '1' ? 'Flashlight will flash with the alarm.' : 'Alarm will ring without the flashlight.'); };
     $('tn').onclick = async () => { try { const r = await CA.pickTone(); localStorage.setItem('cb_tone_name', r.name || 'phone default'); teacherView(); } catch (e) { toast('Could not open the ringtone list.', true); } };
     $('tt').onclick = async () => {
-      try { if (LN) await LN.requestPermissions(); await CA.test(); toast('Ringing now. Tap Stop on the notification to end it.'); }
+      try { if (LN) await LN.requestPermissions(); await CA.test({ flash: localStorage.getItem('cb_flash') !== '0' }); toast('Ringing now. Tap Stop on the notification to end it.'); }
       catch (e) { toast('Test failed: ' + e.message, true); }
     };
   }
@@ -152,6 +169,7 @@ async function teacherView() {
 function startReminders(entries, lead) {
   clearInterval(remTimer);
   const check = () => {
+    if (localStorage.getItem('cb_paused') === '1') return;
     const now = new Date(), day = now.getDay() || 7, nm = now.getHours() * 60 + now.getMinutes();
     const today = now.toISOString().slice(0, 10), fk = 'cb_fired_' + today;
     const fired = JSON.parse(localStorage.getItem(fk) || '[]');
@@ -237,7 +255,8 @@ async function nativeAlarms(entries, lead, interactive) {
       title: lead ? `${e.subjects.name} in ${lead} min` : `${e.subjects.name} starts now`,
       body: `${e.classes.name}, ${e.lbl} at ${hm(e.st)}` });
   });
-  await CA.schedule({ items, snooze: +localStorage.getItem('cb_snooze') || 5 });
+  const paused = localStorage.getItem('cb_paused') === '1';
+  await CA.schedule({ items: paused ? [] : items, snooze: +localStorage.getItem('cb_snooze') || 5, flash: localStorage.getItem('cb_flash') !== '0' });
   return { ok: true, n: items.length };
 }
 
@@ -250,3 +269,12 @@ async function shrink(file) {
   c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
   return await new Promise(r => c.toBlob(r, 'image/jpeg', 0.7));
 }
+
+// ================= Dashboard: greeting, today card, lesson notes =================
+const greet = () => { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'; };
+const noteKey = id => 'cb_note_' + id;
+const noteLine = e => { const n = localStorage.getItem(noteKey(e.id)); return n ? `<br><span class="note">Note: ${esc(n)}</span>` : ''; };
+const left = m => m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+function todayInner(entries) {
+  const now = new Date(), day = now.getDay() || 7, nm = now.getHours() * 60 + now.getMinutes();
+  const 

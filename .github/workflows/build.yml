@@ -78,7 +78,14 @@ jobs:
           package com.classbell.app;
 
           import android.content.Context;
+          import androidx.biometric.BiometricManager;
+          import androidx.biometric.BiometricPrompt;
+          import java.util.concurrent.Executor;
           import android.content.Intent;
+          import android.os.Build;
+          import android.os.PowerManager;
+          import android.provider.Settings;
+          import androidx.core.app.NotificationManagerCompat;
           import android.media.RingtoneManager;
           import android.net.Uri;
           import androidx.activity.result.ActivityResult;
@@ -102,8 +109,10 @@ jobs:
                 .putInt("snooze", call.getInt("snooze", 5))
                 .putBoolean("flash", call.getBoolean("flash", true))
                 .apply();
-              Scheduler.scheduleAll(c);
-              call.resolve();
+              int n = Scheduler.scheduleAll(c);
+              JSObject o = new JSObject();
+              o.put("count", n);
+              call.resolve(o);
             }
 
             // Rings right now so the teacher can check sound, flashlight and notification.
@@ -114,6 +123,90 @@ jobs:
               Intent s = new Intent(c, RingService.class).putExtra("title", "Test alarm").putExtra("body", "ClassBell alarm is working");
               ContextCompat.startForegroundService(c, s);
               call.resolve();
+            }
+
+            // Reports whether the phone is likely to let alarms through.
+            @PluginMethod
+            public void status(PluginCall call) {
+              Context c = getContext();
+              JSObject o = new JSObject();
+              boolean battery = true;
+              try {
+                if (Build.VERSION.SDK_INT >= 23) {
+                  PowerManager pm = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
+                  battery = pm.isIgnoringBatteryOptimizations(c.getPackageName());
+                }
+              } catch (Exception e) { }
+              o.put("battery", battery);
+              o.put("notifications", NotificationManagerCompat.from(c).areNotificationsEnabled());
+              o.put("next", c.getSharedPreferences(Scheduler.PREFS, 0).getLong("next", 0L));
+              o.put("count", c.getSharedPreferences(Scheduler.PREFS, 0).getInt("n", 0));
+              call.resolve(o);
+            }
+
+            // Asks Android to stop limiting this app in the background.
+            @PluginMethod
+            public void fixBattery(PluginCall call) {
+              Context c = getContext();
+              Uri pkg = Uri.parse("package:" + c.getPackageName());
+              try {
+                Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkg);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                c.startActivity(i);
+              } catch (Exception e) {
+                try {
+                  Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg);
+                  i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                  c.startActivity(i);
+                } catch (Exception e2) { }
+              }
+              call.resolve();
+            }
+
+            // Fingerprint (or phone PIN) check used to open the app.
+            @PluginMethod
+            public void authenticate(final PluginCall call) {
+              final androidx.fragment.app.FragmentActivity act = getActivity();
+              act.runOnUiThread(new Runnable() {
+                public void run() {
+                  try {
+                    int allowed = BiometricManager.Authenticators.BIOMETRIC_WEAK | BiometricManager.Authenticators.DEVICE_CREDENTIAL;
+                    if (BiometricManager.from(act).canAuthenticate(allowed) != BiometricManager.BIOMETRIC_SUCCESS) {
+                      JSObject o = new JSObject();
+                      o.put("ok", true);
+                      o.put("skipped", true);
+                      call.resolve(o);
+                      return;
+                    }
+                    Executor ex = ContextCompat.getMainExecutor(act);
+                    BiometricPrompt bp = new BiometricPrompt(act, ex, new BiometricPrompt.AuthenticationCallback() {
+                      @Override
+                      public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult r) {
+                        JSObject o = new JSObject();
+                        o.put("ok", true);
+                        call.resolve(o);
+                      }
+                      @Override
+                      public void onAuthenticationError(int code, CharSequence msg) {
+                        JSObject o = new JSObject();
+                        o.put("ok", false);
+                        call.resolve(o);
+                      }
+                    });
+                    BiometricPrompt.PromptInfo info = new BiometricPrompt.PromptInfo.Builder()
+                      .setTitle("Unlock ClassBell")
+                      .setSubtitle("Use your fingerprint or phone PIN")
+                      .setAllowedAuthenticators(allowed)
+                      .build();
+                    bp.authenticate(info);
+                  } catch (Exception e) {
+                    JSObject o = new JSObject();
+                    o.put("ok", true);
+                    o.put("skipped", true);
+                    call.resolve(o);
+                  }
+                }
+              });
             }
 
             // Opens the phone's own ringtone list.
@@ -171,14 +264,16 @@ jobs:
               am.setAlarmClock(new AlarmManager.AlarmClockInfo(when, show), pi(c, id, title, body));
             }
 
-            // Sets the next occurrence of every saved class alarm. Called when the app saves, after each ring, and after reboot.
-            static void scheduleAll(Context c) {
+            // Sets the next occurrence of every saved class alarm. Returns how many were set (-1 if the phone refused).
+            static int scheduleAll(Context c) {
+              int count = 0;
               try {
                 SharedPreferences p = c.getSharedPreferences(PREFS, 0);
                 AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
                 int oldN = p.getInt("n", 0);
                 for (int k = 1; k <= oldN; k++) am.cancel(pi(c, k, "", ""));
                 JSONArray a = new JSONArray(p.getString("items", "[]"));
+                long nextMin = Long.MAX_VALUE;
                 for (int k = 0; k < a.length(); k++) {
                   JSONObject o = a.getJSONObject(k);
                   Calendar t = Calendar.getInstance();
@@ -188,26 +283,45 @@ jobs:
                   t.set(Calendar.HOUR_OF_DAY, o.getInt("hour"));
                   t.set(Calendar.MINUTE, o.getInt("minute"));
                   if (t.getTimeInMillis() <= System.currentTimeMillis() + 1000) t.add(Calendar.DAY_OF_YEAR, 7);
-                  set(c, t.getTimeInMillis(), k + 1, o.optString("title"), o.optString("body"));
+                  long tm = t.getTimeInMillis();
+                  if (tm < nextMin) nextMin = tm;
+                  set(c, tm, k + 1, o.optString("title"), o.optString("body"));
+                  count++;
                 }
-                p.edit().putInt("n", a.length()).apply();
-              } catch (Exception e) { }
+                p.edit().putInt("n", a.length()).putLong("next", count == 0 ? 0L : nextMin).apply();
+                return count;
+              } catch (Exception e) {
+                return -1;
+              }
             }
           }
           EOF
           cat > $D/AlarmReceiver.java <<'EOF'
           package com.classbell.app;
 
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
           import android.content.BroadcastReceiver;
           import android.content.Context;
           import android.content.Intent;
+          import android.media.AudioAttributes;
+          import android.media.RingtoneManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import androidx.core.app.NotificationCompat;
           import androidx.core.content.ContextCompat;
 
           public class AlarmReceiver extends BroadcastReceiver {
             @Override
             public void onReceive(Context c, Intent i) {
               String a = i.getAction() == null ? "" : i.getAction();
-              if (a.equals(Intent.ACTION_BOOT_COMPLETED)) { Scheduler.scheduleAll(c); return; }
+              if (a.equals(Intent.ACTION_BOOT_COMPLETED) || a.equals(Intent.ACTION_MY_PACKAGE_REPLACED)
+                  || a.equals(Intent.ACTION_TIME_CHANGED) || a.equals(Intent.ACTION_TIMEZONE_CHANGED)) {
+                Scheduler.scheduleAll(c);
+                return;
+              }
               if (a.equals("com.classbell.STOP")) { c.stopService(new Intent(c, RingService.class)); return; }
               if (a.equals("com.classbell.SNOOZE")) {
                 c.stopService(new Intent(c, RingService.class));
@@ -215,10 +329,41 @@ jobs:
                 Scheduler.set(c, System.currentTimeMillis() + m * 60000L, 9000, i.getStringExtra("title"), i.getStringExtra("body"));
                 return;
               }
-              Intent s = new Intent(c, RingService.class)
-                .putExtra("title", i.getStringExtra("title")).putExtra("body", i.getStringExtra("body"));
-              ContextCompat.startForegroundService(c, s);
+              String title = i.getStringExtra("title") == null ? "Class time" : i.getStringExtra("title");
+              String body = i.getStringExtra("body") == null ? "" : i.getStringExtra("body");
+              // Line up next week's alarm first, so it is set even if ringing fails.
               Scheduler.scheduleAll(c);
+              try {
+                Intent s = new Intent(c, RingService.class).putExtra("title", title).putExtra("body", body);
+                ContextCompat.startForegroundService(c, s);
+              } catch (Exception e) {
+                fallback(c, title, body);
+              }
+            }
+
+            // Backup: a loud alarm-sound notification, used if the phone will not let the ringing service start.
+            static void fallback(Context c, String title, String body) {
+              try {
+                NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+                Uri tone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+                long[] pat = {0, 700, 400, 700, 400, 700};
+                if (Build.VERSION.SDK_INT >= 26) {
+                  NotificationChannel ch = new NotificationChannel("class_backup", "Class alarm (backup)", NotificationManager.IMPORTANCE_HIGH);
+                  ch.setSound(tone, new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
+                  ch.enableVibration(true);
+                  ch.setVibrationPattern(pat);
+                  nm.createNotificationChannel(ch);
+                }
+                PendingIntent open = PendingIntent.getActivity(c, 1, new Intent(c, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
+                Notification n = new NotificationCompat.Builder(c, "class_backup")
+                  .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                  .setContentTitle(title).setContentText(body)
+                  .setPriority(NotificationCompat.PRIORITY_MAX).setCategory(NotificationCompat.CATEGORY_ALARM)
+                  .setSound(tone).setVibrate(pat).setAutoCancel(true)
+                  .setContentIntent(open).setFullScreenIntent(open, true).build();
+                nm.notify((int) (System.currentTimeMillis() % 100000) + 100, n);
+              } catch (Exception e) { }
             }
           }
           EOF
@@ -234,6 +379,7 @@ jobs:
           import android.content.pm.ServiceInfo;
           import android.hardware.camera2.CameraManager;
           import android.media.AudioAttributes;
+          import android.media.AudioManager;
           import android.media.MediaPlayer;
           import android.media.RingtoneManager;
           import android.net.Uri;
@@ -275,90 +421,4 @@ jobs:
                 nm.createNotificationChannel(ch);
               }
               PendingIntent open = PendingIntent.getActivity(this, 1, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
-              PendingIntent snooze = PendingIntent.getBroadcast(this, 2,
-                new Intent(this, AlarmReceiver.class).setAction("com.classbell.SNOOZE").putExtra("title", title).putExtra("body", body),
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-              PendingIntent stop = PendingIntent.getBroadcast(this, 3,
-                new Intent(this, AlarmReceiver.class).setAction("com.classbell.STOP"), PendingIntent.FLAG_IMMUTABLE);
-              Notification n = new NotificationCompat.Builder(this, "class_ring")
-                .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-                .setContentTitle(title).setContentText(body)
-                .setPriority(NotificationCompat.PRIORITY_MAX).setCategory(NotificationCompat.CATEGORY_ALARM)
-                .setOngoing(true).setContentIntent(open).setFullScreenIntent(open, true)
-                .addAction(0, "Snooze", snooze).addAction(0, "Stop", stop).build();
-              if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-              else startForeground(1, n);
-              startRinging();
-              return START_NOT_STICKY;
-            }
-
-            void startRinging() {
-              stopRinging();
-              try {
-                String saved = getSharedPreferences(Scheduler.PREFS, 0).getString("tone", "");
-                Uri u = saved.isEmpty() ? RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM) : Uri.parse(saved);
-                if (u == null) u = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
-                mp = new MediaPlayer();
-                try { mp.setDataSource(this, u); }
-                catch (Exception e) { mp.reset(); mp.setDataSource(this, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)); }
-                mp.setAudioAttributes(new AudioAttributes.Builder()
-                  .setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
-                mp.setLooping(true);
-                mp.prepare();
-                mp.start();
-              } catch (Exception e) { }
-              try {
-                vib = (Vibrator) getSystemService(VIBRATOR_SERVICE);
-                long[] pat = {0, 700, 400};
-                if (Build.VERSION.SDK_INT >= 26) vib.vibrate(VibrationEffect.createWaveform(pat, 0));
-                else vib.vibrate(pat, 0);
-              } catch (Exception e) { }
-              try {
-                cm = (CameraManager) getSystemService(CAMERA_SERVICE);
-                cam = cm.getCameraIdList()[0];
-                if (getSharedPreferences(Scheduler.PREFS, 0).getBoolean("flash", true)) h.post(blink);
-              } catch (Exception e) { }
-              try {
-                PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-                wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "classbell:ring");
-                wl.acquire(5 * 60 * 1000L);
-              } catch (Exception e) { }
-              h.postDelayed(auto, 5 * 60 * 1000L);
-            }
-
-            void stopRinging() {
-              h.removeCallbacksAndMessages(null);
-              try { if (mp != null) { mp.stop(); mp.release(); } } catch (Exception e) { }
-              mp = null;
-              try { if (vib != null) vib.cancel(); } catch (Exception e) { }
-              try { if (cm != null && cam != null) cm.setTorchMode(cam, false); } catch (Exception e) { }
-              on = false;
-              try { if (wl != null && wl.isHeld()) wl.release(); } catch (Exception e) { }
-            }
-
-            @Override public void onDestroy() { stopRinging(); super.onDestroy(); }
-          }
-          EOF
-          python3 - <<'PY'
-          p = 'android/app/src/main/AndroidManifest.xml'
-          s = open(p).read()
-          names = ['POST_NOTIFICATIONS','VIBRATE','WAKE_LOCK','RECEIVE_BOOT_COMPLETED','FOREGROUND_SERVICE','FOREGROUND_SERVICE_MEDIA_PLAYBACK','USE_FULL_SCREEN_INTENT']
-          perms = ''.join('<uses-permission android:name="android.permission.%s"/>\n ' % x for x in names)
-          s = s.replace('<application', perms + '<application', 1)
-          comp = '<receiver android:name=".AlarmReceiver" android:exported="true"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter></receiver>\n <service android:name=".RingService" android:exported="false" android:foregroundServiceType="mediaPlayback"/>\n '
-          s = s.replace('</application>', comp + '</application>', 1)
-          open(p, 'w').write(s)
-          PY
-      - name: Use fixed signing key (lets new versions install over old ones)
-        run: |
-          if [ -f debug.keystore ]; then mkdir -p ~/.android && cp debug.keystore ~/.android/debug.keystore; fi
-      - name: Build APK
-        run: |
-          cd android
-          chmod +x gradlew
-          ./gradlew assembleDebug
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_number }}
-          name: ClassBell v${{ github.run_number }}
-          files: android/app/build/outputs/apk/debug/app-debug.apk
+              PendingIntent snooze = PendingInte

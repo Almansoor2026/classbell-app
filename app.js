@@ -89,7 +89,8 @@ async function teacherView() {
     <h3>Reminders</h3><div class="card">
       <label>Remind me this many minutes before class</label><input id="ld" type="number" min="0" max="120" value="${settings.reminder_lead_minutes}">
       <label>Snooze for how many minutes (Android app)</label><input id="sz" type="number" min="1" max="30" value="${localStorage.getItem('cb_snooze') || 5}">
-      <label>Method</label><select id="rm"><option value="push" ${settings.reminder_method === 'push' ? 'selected' : ''}>Phone notification</option><option value="sms" ${settings.reminder_method === 'sms' ? 'selected' : ''}>SMS (coming soon)</option></select>
+      <label>Method</label><select id="rm"><option value="push" ${settings.reminder_method === 'push' ? 'selected' : ''}>Phone notification</option><option value="whatsapp" ${settings.reminder_method === 'whatsapp' ? 'selected' : ''}>WhatsApp message</option><option value="sms" ${settings.reminder_method === 'sms' ? 'selected' : ''}>SMS (coming soon)</option></select>
+      ${isNative() ? `<button class="btn line" id="tn">Choose ringtone (${esc(localStorage.getItem('cb_tone_name') || 'phone default')})</button><button class="btn line" id="tt">Test the alarm now</button>` : ''}
       <button class="btn" id="sr">Save and turn on reminders</button></div>`;
 
   app.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
@@ -117,6 +118,14 @@ async function teacherView() {
       const { error } = await sb.from('timetable_entries').insert(row);
       if (error) return toast(error.code === '23505' ? 'That class already has a teacher in that period.' : error.message, true);
       teacherView();
+    };
+  }
+  if (isNative()) {
+    const CA = Capacitor.Plugins.ClassAlarm, LN = Capacitor.Plugins.LocalNotifications;
+    $('tn').onclick = async () => { try { const r = await CA.pickTone(); localStorage.setItem('cb_tone_name', r.name || 'phone default'); teacherView(); } catch (e) { toast('Could not open the ringtone list.', true); } };
+    $('tt').onclick = async () => {
+      try { if (LN) await LN.requestPermissions(); await CA.test(); toast('Ringing now. Tap Stop on the notification to end it.'); }
+      catch (e) { toast('Test failed: ' + e.message, true); }
     };
   }
   $('sr').onclick = async () => {
@@ -240,5 +249,4 @@ async function shrink(file) {
   c.width = Math.round(bmp.width * s); c.height = Math.round(bmp.height * s);
   c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
   return await new Promise(r => c.toBlob(r, 'image/jpeg', 0.7));
-        }
-    
+}

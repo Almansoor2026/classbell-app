@@ -1,5 +1,5 @@
 // Caches the app shell so ClassBell opens without internet.
-const CACHE = 'classbell-v10';
+const CACHE = 'classbell-v11';
 const SHELL = ['./', './index.html', './app.js', './manifest.json'];
 
 self.addEventListener('install', e => {

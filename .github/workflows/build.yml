@@ -72,10 +72,17 @@ jobs:
           package com.classbell.app;
 
           import android.content.Context;
+          import android.content.Intent;
+          import android.media.RingtoneManager;
+          import android.net.Uri;
+          import androidx.activity.result.ActivityResult;
+          import androidx.core.content.ContextCompat;
           import com.getcapacitor.JSArray;
+          import com.getcapacitor.JSObject;
           import com.getcapacitor.Plugin;
           import com.getcapacitor.PluginCall;
           import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.ActivityCallback;
           import com.getcapacitor.annotation.CapacitorPlugin;
 
           @CapacitorPlugin(name = "ClassAlarm")
@@ -90,6 +97,42 @@ jobs:
                 .apply();
               Scheduler.scheduleAll(c);
               call.resolve();
+            }
+
+            // Rings right now so the teacher can check sound, flashlight and notification.
+            @PluginMethod
+            public void test(PluginCall call) {
+              Context c = getContext();
+              Intent s = new Intent(c, RingService.class).putExtra("title", "Test alarm").putExtra("body", "ClassBell alarm is working");
+              ContextCompat.startForegroundService(c, s);
+              call.resolve();
+            }
+
+            // Opens the phone's own ringtone list.
+            @PluginMethod
+            public void pickTone(PluginCall call) {
+              Intent i = new Intent(RingtoneManager.ACTION_RINGTONE_PICKER);
+              i.putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_ALARM | RingtoneManager.TYPE_RINGTONE);
+              i.putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true);
+              i.putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false);
+              i.putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Choose class alarm sound");
+              startActivityForResult(call, i, "toneResult");
+            }
+
+            @ActivityCallback
+            private void toneResult(PluginCall call, ActivityResult result) {
+              if (call == null) return;
+              Intent d = result.getData();
+              Uri u = d != null ? (Uri) d.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI) : null;
+              Context c = getContext();
+              String name = "Phone default";
+              if (u != null) {
+                c.getSharedPreferences(Scheduler.PREFS, 0).edit().putString("tone", u.toString()).apply();
+                try { name = RingtoneManager.getRingtone(c, u).getTitle(c); } catch (Exception e) { }
+              }
+              JSObject o = new JSObject();
+              o.put("name", name);
+              call.resolve(o);
             }
           }
           EOF
@@ -244,10 +287,12 @@ jobs:
             void startRinging() {
               stopRinging();
               try {
-                Uri u = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+                String saved = getSharedPreferences(Scheduler.PREFS, 0).getString("tone", "");
+                Uri u = saved.isEmpty() ? RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM) : Uri.parse(saved);
                 if (u == null) u = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
                 mp = new MediaPlayer();
-                mp.setDataSource(this, u);
+                try { mp.setDataSource(this, u); }
+                catch (Exception e) { mp.reset(); mp.setDataSource(this, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)); }
                 mp.setAudioAttributes(new AudioAttributes.Builder()
                   .setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
                 mp.setLooping(true);
